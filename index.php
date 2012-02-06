@@ -1,4 +1,7 @@
+<pre>
 <?php
+error_reporting(E_ALL);
+ini_set('display_errors', "1");
 /**
  * A Simple, simple proxy to install on a server with PHP, which has access to The Pirate Bay.
  *   For if you no longer have that access.
@@ -6,58 +9,58 @@
 class AhoyProxy {
   public  $parsed = "";
   private $body   = "";
-  private $path   = "";
   private $get    = array();
-  private $url    = "";
-  private $harbor = "http://ahoy.audrey";
-  private $yonder = "thepiratebay.org";
-  private $yonder_protocol = "https"; // @TODO: implement https version.
+  private $harbor = "http://ahoy.webschuur.com";
 
   function __construct() {
     $this->get = $_GET;
+    $path = "";
 
     if (isset($_GET['q'])) {
-      $this->path = $this->search_to_path();
+      $path = $this->search_to_path();
     }
     elseif (isset($_GET['path'])) {
-      $this->path = $_GET['path'];
-    }
-    else {
-      $this->path = "";
+      $path = $_GET['path'];
     }
 
-    $this->url = "{$this->yonder_protocol}://{$this->yonder}/{$this->path}";
+    $this->yonder($path);
   }
 
   public function get() {
+    $errno = 0;
+    $errstr = "";
     $this->body = "";
-    // @TODO: Implement using a custom socket. See http://nl2.php.net/stream_socket_client
-    $ch = curl_init($this->url);
-    //return the transfer as a string
-    curl_setopt($ch,CURLOPT_RETURNTRANSFER, 1);
-    curl_setopt($ch,CURLOPT_HEADER, 0);
-    curl_setopt($cu,CURLOPT_BINARYTRANSFER, true);
-    curl_setopt($cu,CURLOPT_USERAGENT,$_SERVER['HTTP_USER_AGENT']);
-    curl_setopt($cu,CURLOPT_WRITEFUNCTION, 'read_body');
-    curl_setopt($cu,CURLOPT_HEADERFUNCTION, 'read_header');
-    $headers = apache_request_headers();
-    $client_headers = array();
-    foreach ($headers as $header => $value) {
-      $client_headers[] = sprintf('%s: %s', $header, $value);
-    }
-    $client_headers[] = sprintf('X-Forwarded-For: %s', $_SERVER['REMOTE_ADDR']);
-    curl_setopt($cu,CURLOPT_HTTPHEADER, $client_headers);
 
-    try {
-      $this->body = curl_exec($ch);
-      var_dump(curl_getinfo($ch));
+    var_dump($this->socket_url());
+    $fp = stream_socket_client("{$this->socket_url()}", $errno, $errstr);
+
+    var_dump(array("errno" => $errno, "errstr" => $errstr));
+    if (!$fp) {
+      fclose($fp); //@TODO: does this make any sense?
+      throw new Exception("Socket could not be opened. Socket: $socket. Error: $errstr ($errno)");
     }
-    catch(Exception $e) {
-      //Always close the socket thing.
-      curl_close($ch);
-      $this->body = "Caught exception: {$e->getMessage()}";
+
+    $headers = apache_request_headers();
+    $headers += array(
+      "User-agent" => $_SERVER['HTTP_USER_AGENT'], //@TODO if empty, fallback on custom UA.
+      "X-Forwarded-For" => $_SERVER['REMOTE_ADDR'],
+    );
+
+    $request = "GET {$this->yonder()->path} HTTP/1.0\r\n";
+
+    foreach ($headers as $name => $value) {
+      $value = trim($value);
+      $request .= "{$name}: {$value}";
     }
-    curl_close($ch);
+
+    var_dump($request);
+    fwrite($fp, $request);
+    while (!feof($fp)) {
+      $this->body = fgets($fp, 1024);
+    }
+    var_dump($fp);
+    fclose($fp);
+
     return $this;
   }
 
@@ -94,15 +97,68 @@ class AhoyProxy {
     return '\1"'.$this->harbor.'?path=\6"';
   }
 
-
+  private function yonder($path = "/") {
+    static $uri;
+    if (empty($uri)) {
+      $uri = new URI();
+      // @TODO detect if request is https, if so connect to remote over https too.
+      $uri->scheme = "http";
+      $uri->host   = "thepiratebay.se";
+      $uri->path   = $path;
+    }
+    return $uri;
+  }
   /**
-   * Headers for socket
+   * String as url for socket
    */
-  private function headers() {
-    return 
-      "GET {$this->path} HTTP/1.0\r\n".
-      "Host: {$this->yonder_protocol}://{$this->yonder}\r\n".
-      "Accept: */*\r\n\r\n";
+  private function socket_url() {
+    $uri = new URI();
+    switch ($this->yonder()->scheme) {
+      case 'http':
+      case 'feed':
+        $uri->scheme = "tcp";
+        $uri->host   = $this->yonder()->host;
+        $uri->port   = $this->yonder()->port;
+        $uri->path   = $this->yonder()->path;
+        break;
+      case 'https':
+        //@TODO implement https, with a ssl:// protocol and port 443.
+      default:
+        throw new Exception("Invalid protocol");
+        break;
+    }
+    return "{$uri}";
+  }
+}
+
+/**
+ * Simple URI class; contains the relevant information that describes a URI.
+ * @TODO implement the other retvals from http://nl2.php.net/parse_url
+ **/
+class URI {
+  public $scheme = "http";
+  public $host   = "";
+  public $port   = 80;
+  public $path   = "/";
+  function __construct($uri = "") {
+    if (!empty($uri)) {
+      $null = null;
+      list($this->scheme, $this->host, $this->port, $null, $null, $this->path) = parse_url($uri);
+      unset($null); //Fuck you too, PHP.
+    }
+  }
+
+  public function __toString() {
+    return "{$this->scheme}://{$this->host}:{$this->port}";
+  }
+
+  public function toArray() {
+    return array(
+      "scheme" => $this->scheme,
+      "host"   => $this->host,
+      "port"   => $this->port,
+      "path"   => $this->path,
+    );
   }
 }
 
@@ -110,4 +166,5 @@ class AhoyProxy {
 // @TODO clean this up and make this into a Router and Caller Class.
 $ahoy = new AhoyProxy();
 print $ahoy->get()->parse()->parsed;
+var_dump($ahoy);
 ?>
